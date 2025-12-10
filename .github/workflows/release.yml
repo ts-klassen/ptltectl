@@ -11,7 +11,12 @@ jobs:
     permissions:
       contents: write
     env:
-      ARTIFACT_NAME: ptltectl-${{ github.ref_name }}-x86_64-unknown-linux-gnu
+      PROJECT_NAME: ptltectl
+      TARGETS: |
+        aarch64-unknown-linux-gnu
+        aarch64-unknown-linux-musl
+        x86_64-unknown-linux-gnu
+        x86_64-unknown-linux-musl
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,14 +26,24 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install cross
+        run: cargo install cross
+
       - name: Build
-        run: cargo build --release --locked
+        run: |
+          for TARGET in $TARGETS; do
+            cross build --release --locked --target "$TARGET"
+          done
 
       - name: Package binary
         run: |
-          tar -C target/release -czf "${{ env.ARTIFACT_NAME }}.tar.gz" ptltectl
+          mkdir -p dist
+          for TARGET in $TARGETS; do
+            ARCHIVE_NAME="${{ env.PROJECT_NAME }}-${{ github.ref_name }}-${TARGET}.tar.gz"
+            tar -C "target/$TARGET/release" -czf "dist/$ARCHIVE_NAME" "${{ env.PROJECT_NAME }}"
+          done
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ARTIFACT_NAME }}.tar.gz
+          files: dist/*
