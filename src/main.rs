@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use retry::{OperationResult, delay::Fixed, retry};
 use rusb::UsbContext;
 use std::fmt;
 use std::time::Duration;
@@ -8,6 +9,9 @@ const PRODUCT_ID: u16 = 0x8003;
 const ENDPOINT_OUT: u8 = 0x01;
 const TIMEOUT_MS: u64 = 1000;
 const REPORT_LEN: usize = 8;
+// Allow concurrent commands ~1s for the kernel to release the HID interface.
+const BUSY_RETRY_ATTEMPTS: usize = 20;
+const BUSY_RETRY_DELAY_MS: u64 = 50;
 
 const COMMAND_VERSION: u8 = 0x00;
 const COMMAND_ID: u8 = 0x00;
@@ -168,12 +172,12 @@ fn run(cli: Cli) -> ControlResult<()> {
 
 fn send_report(report: [u8; REPORT_LEN]) -> ControlResult<()> {
     let context = rusb::Context::new()?;
-    let handle = context
+    let mut handle = context
         .open_device_with_vid_pid(VENDOR_ID, PRODUCT_ID)
         .ok_or(ControlError::DeviceNotFound)?;
 
     let _ = handle.set_auto_detach_kernel_driver(true);
-    handle.claim_interface(0)?;
+    claim_interface_with_retry(&mut handle, 0)?;
 
     let timeout = Duration::from_millis(TIMEOUT_MS);
     let written = handle.write_interrupt(ENDPOINT_OUT, &report, timeout)?;
@@ -208,6 +212,19 @@ fn build_report(buzzer: u8, pitch: u8, led_ry: u8, led_gb: u8, led_w: u8) -> [u8
         led_w,
         0,
     ]
+}
+
+fn claim_interface_with_retry<T: UsbContext>(
+    handle: &mut rusb::DeviceHandle<T>,
+    interface: u8,
+) -> ControlResult<()> {
+    let strategy = Fixed::from_millis(BUSY_RETRY_DELAY_MS).take(BUSY_RETRY_ATTEMPTS);
+    retry(strategy, || match handle.claim_interface(interface) {
+        Ok(()) => OperationResult::Ok(()),
+        Err(rusb::Error::Busy) => OperationResult::Retry(rusb::Error::Busy),
+        Err(err) => OperationResult::Err(err),
+    })
+    .map_err(|err| ControlError::from(err.error))
 }
 
 fn nibble(value: u8) -> u8 {
