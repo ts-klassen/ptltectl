@@ -10,7 +10,17 @@ cargo build --release
 
 ## Usage
 
-All commands require access to the tower (see the udev rule in the main `ptlte` README).
+All commands require permission to open the USB device. Quick check: if commands work with `sudo` but not as your user, add a udev rule.
+
+Example udev rule (Linux):
+
+```bash
+sudo tee /etc/udev/rules.d/99-patlite-lr6usb.rules >/dev/null <<'EOF'
+SUBSYSTEM=="usb", ATTR{idVendor}=="191a", ATTR{idProduct}=="8003", MODE="0660", TAG+="uaccess"
+EOF
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
 
 ```bash
 # Turn the red LED solid on

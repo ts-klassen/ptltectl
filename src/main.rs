@@ -172,9 +172,7 @@ fn run(cli: Cli) -> ControlResult<()> {
 
 fn send_report(report: [u8; REPORT_LEN]) -> ControlResult<()> {
     let context = rusb::Context::new()?;
-    let mut handle = context
-        .open_device_with_vid_pid(VENDOR_ID, PRODUCT_ID)
-        .ok_or(ControlError::DeviceNotFound)?;
+    let mut handle = open_device(&context)?;
 
     let _ = handle.set_auto_detach_kernel_driver(true);
     claim_interface_with_retry(&mut handle, 0)?;
@@ -186,6 +184,38 @@ fn send_report(report: [u8; REPORT_LEN]) -> ControlResult<()> {
     }
 
     Ok(())
+}
+
+fn open_device<T: UsbContext>(context: &T) -> ControlResult<rusb::DeviceHandle<T>> {
+    let devices = context.devices()?;
+
+    let mut saw_matching_vid_pid = false;
+    let mut last_open_error: Option<rusb::Error> = None;
+
+    for device in devices.iter() {
+        let descriptor = match device.device_descriptor() {
+            Ok(descriptor) => descriptor,
+            Err(_) => continue,
+        };
+
+        if descriptor.vendor_id() != VENDOR_ID || descriptor.product_id() != PRODUCT_ID {
+            continue;
+        }
+
+        saw_matching_vid_pid = true;
+        match device.open() {
+            Ok(handle) => return Ok(handle),
+            Err(err) => last_open_error = Some(err),
+        }
+    }
+
+    if saw_matching_vid_pid {
+        Err(ControlError::DeviceOpenFailed(
+            last_open_error.unwrap_or(rusb::Error::Other),
+        ))
+    } else {
+        Err(ControlError::DeviceNotFound)
+    }
 }
 
 fn assemble_leds(color: u8, state: u8) -> ControlResult<(u8, u8, u8)> {
@@ -234,6 +264,7 @@ fn nibble(value: u8) -> u8 {
 #[derive(Debug)]
 enum ControlError {
     DeviceNotFound,
+    DeviceOpenFailed(rusb::Error),
     InvalidArg(String),
     Usb(rusb::Error),
     ShortWrite,
@@ -243,7 +274,18 @@ impl fmt::Display for ControlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ControlError::DeviceNotFound => write!(f, "device 191a:8003 not found"),
+            ControlError::DeviceOpenFailed(rusb::Error::Access) => write!(
+                f,
+                "permission denied opening device 191a:8003 (try `sudo`, or add a udev rule to grant access)"
+            ),
+            ControlError::DeviceOpenFailed(err) => {
+                write!(f, "failed to open device 191a:8003: {err}")
+            }
             ControlError::InvalidArg(msg) => write!(f, "{msg}"),
+            ControlError::Usb(rusb::Error::Access) => write!(
+                f,
+                "permission denied talking to device 191a:8003 (try `sudo`, or add a udev rule to grant access)"
+            ),
             ControlError::Usb(err) => write!(f, "usb error: {err}"),
             ControlError::ShortWrite => write!(f, "usb short write"),
         }
